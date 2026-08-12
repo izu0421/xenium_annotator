@@ -78,6 +78,22 @@ def load_top_genes_map(repo_root: str, top_k: int = 5) -> tuple[dict[str, str], 
 
 
 @st.cache_data(show_spinner=False)
+def load_bundled_top_genes_map(sample_csv_path: str) -> dict[str, str]:
+    try:
+        df = pd.read_csv(sample_csv_path)
+    except Exception:
+        return {}
+    if "cell_id" not in df.columns or "top_genes" not in df.columns:
+        return {}
+    tmp = df[["cell_id", "top_genes"]].copy()
+    tmp["cell_id"] = tmp["cell_id"].fillna("").astype(str)
+    tmp["top_genes"] = tmp["top_genes"].fillna("").astype(str)
+    tmp = tmp[tmp["cell_id"].str.len() > 0]
+    tmp = tmp[tmp["top_genes"].str.len() > 0]
+    return dict(zip(tmp["cell_id"], tmp["top_genes"]))
+
+
+@st.cache_data(show_spinner=False)
 def load_table(csv_path: str) -> pd.DataFrame:
     ann = pd.read_csv(csv_path)
     for col in ["label", "notes", "annotated_at"]:
@@ -356,6 +372,12 @@ def main() -> None:
         ann = demo_table()
         source_csv = None
     ann = ensure_schema(ann)
+
+    bundled_top_genes_map = load_bundled_top_genes_map(str(SAMPLE_PATH))
+    needs_top = ann["top_genes"].str.strip().eq("")
+    if needs_top.any() and bundled_top_genes_map:
+        filled = ann.loc[needs_top, "cell_id"].astype(str).map(bundled_top_genes_map).fillna("")
+        ann.loc[needs_top, "top_genes"] = filled
 
     csv_has_top_genes = (ann["top_genes"].str.strip().str.len() > 0).any()
     if csv_has_top_genes:
