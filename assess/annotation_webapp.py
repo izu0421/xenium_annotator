@@ -49,6 +49,8 @@ def demo_table() -> pd.DataFrame:
 def load_top_genes_map(repo_root: str, top_k: int = 5) -> tuple[dict[str, str], str]:
     try:
         scripts_dir = Path(repo_root) / "scripts"
+        if not (scripts_dir / "config.py").exists() or not (scripts_dir / "data.py").exists():
+            return {}, ""
         if str(scripts_dir) not in sys.path:
             sys.path.insert(0, str(scripts_dir))
 
@@ -92,7 +94,7 @@ def load_table(csv_path: str) -> pd.DataFrame:
 
 def ensure_schema(ann: pd.DataFrame) -> pd.DataFrame:
     ann = ann.copy()
-    required = ["sample_id", "cell_id", "channel", "crop_path", "label", "confidence", "notes", "annotated_at"]
+    required = ["sample_id", "cell_id", "channel", "crop_path", "label", "confidence", "notes", "annotated_at", "top_genes"]
     for col in required:
         if col not in ann.columns:
             ann[col] = "" if col not in {"sample_id", "confidence"} else np.nan
@@ -103,6 +105,7 @@ def ensure_schema(ann: pd.DataFrame) -> pd.DataFrame:
     ann["channel"] = ann["channel"].fillna("unknown").astype(str)
     ann["cell_id"] = ann["cell_id"].fillna("").astype(str)
     ann["crop_path"] = ann["crop_path"].fillna("").astype(str)
+    ann["top_genes"] = ann["top_genes"].fillna("").astype(str)
     ann["sample_id"] = pd.to_numeric(ann["sample_id"], errors="coerce").fillna(0).astype(int)
     return ann
 
@@ -354,7 +357,11 @@ def main() -> None:
         source_csv = None
     ann = ensure_schema(ann)
 
-    top_genes_map, top_genes_status = load_top_genes_map(str(REPO), top_k=5)
+    csv_has_top_genes = (ann["top_genes"].str.strip().str.len() > 0).any()
+    if csv_has_top_genes:
+        top_genes_map, top_genes_status = {}, ""
+    else:
+        top_genes_map, top_genes_status = load_top_genes_map(str(REPO), top_k=5)
 
     st.sidebar.markdown("### GitHub Sync")
     default_repo = "izu0421/xenium_annotator"
@@ -487,7 +494,11 @@ def main() -> None:
     st.write(
         f"sample_id={int(row['sample_id'])} | channel={row['channel']} | cell_id={row['cell_id']}"
     )
-    top_genes = top_genes_map.get(str(row["cell_id"]), "unknown")
+    top_genes_csv = str(row.get("top_genes", "")).strip()
+    if top_genes_csv and top_genes_csv.lower() != "nan":
+        top_genes = top_genes_csv
+    else:
+        top_genes = top_genes_map.get(str(row["cell_id"]), "unknown")
     st.caption(f"Top expressed genes: {top_genes}")
     if top_genes_status and top_genes == "unknown":
         st.caption(top_genes_status)
