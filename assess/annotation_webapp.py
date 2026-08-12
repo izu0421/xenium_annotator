@@ -11,6 +11,7 @@ import base64
 import datetime as dt
 import json
 from pathlib import Path
+import sys
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
@@ -42,6 +43,36 @@ def demo_table() -> pd.DataFrame:
             "annotated_at": ["", "", ""],
         }
     )
+
+
+@st.cache_data(show_spinner=False)
+def load_top_genes_map(repo_root: str, top_k: int = 5) -> tuple[dict[str, str], str]:
+    try:
+        scripts_dir = Path(repo_root) / "scripts"
+        if str(scripts_dir) not in sys.path:
+            sys.path.insert(0, str(scripts_dir))
+
+        from config import Config
+        from data import load_rna
+
+        cfg_top = Config()
+        cell_ids, rna, gene_names = load_rna(cfg_top)
+        if rna.shape[1] == 0:
+            return {}, "Top genes unavailable: RNA matrix has zero columns."
+
+        k = min(int(top_k), int(rna.shape[1]))
+        top_idx = np.argpartition(rna, kth=max(0, rna.shape[1] - k), axis=1)[:, -k:]
+        top_vals = np.take_along_axis(rna, top_idx, axis=1)
+        sort_idx = np.argsort(-top_vals, axis=1)
+        top_sorted = np.take_along_axis(top_idx, sort_idx, axis=1)
+
+        out: dict[str, str] = {}
+        for i, cid in enumerate(cell_ids.tolist()):
+            genes = [str(gene_names[j]) for j in top_sorted[i] if float(rna[i, j]) > 0.0]
+            out[str(cid)] = ", ".join(genes[:k]) if genes else "(no RNA counts)"
+        return out, ""
+    except Exception as e:
+        return {}, f"Top genes unavailable: {e}"
 
 
 @st.cache_data(show_spinner=False)
@@ -323,6 +354,8 @@ def main() -> None:
         source_csv = None
     ann = ensure_schema(ann)
 
+    top_genes_map, top_genes_status = load_top_genes_map(str(REPO), top_k=5)
+
     st.sidebar.markdown("### GitHub Sync")
     default_repo = "izu0421/xenium_annotator"
     if source_csv is not None:
@@ -454,6 +487,10 @@ def main() -> None:
     st.write(
         f"sample_id={int(row['sample_id'])} | channel={row['channel']} | cell_id={row['cell_id']}"
     )
+    top_genes = top_genes_map.get(str(row["cell_id"]), "unknown")
+    st.caption(f"Top expressed genes: {top_genes}")
+    if top_genes_status and top_genes == "unknown":
+        st.caption(top_genes_status)
 
     try:
         bundled = bundled_triptych_path(int(row["sample_id"]))
