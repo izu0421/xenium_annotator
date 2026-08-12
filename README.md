@@ -86,3 +86,12 @@ For GitHub deployment, push this repository and point your app host
 
 - App file: `assess/annotation_webapp.py`
 - Requirements: `assess/requirements-webapp.txt`
+
+To enable in-app commits of annotations back to GitHub, set a token in
+Streamlit secrets (with `repo` scope for private repos, or `contents:write`
+for fine-grained tokens):
+
+```toml
+[github]
+token = "ghp_xxx"
+```

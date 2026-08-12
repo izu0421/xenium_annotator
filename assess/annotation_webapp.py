@@ -7,8 +7,13 @@ Run locally:
 
 from __future__ import annotations
 
+import base64
 import datetime as dt
+import json
 from pathlib import Path
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 import numpy as np
 import pandas as pd
@@ -170,6 +175,100 @@ def bundled_triptych_path(sample_id: int) -> Path:
     return TRIPTYCH_DIR / f"{int(sample_id):06d}.png"
 
 
+def github_request(url: str, token: str, method: str = "GET", payload: dict | None = None) -> tuple[int, dict]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        data = json.dumps(payload).encode("utf-8")
+
+    req = Request(url, data=data, headers=headers, method=method)
+    try:
+        with urlopen(req, timeout=25) as resp:
+            body = resp.read().decode("utf-8")
+            return resp.getcode(), json.loads(body) if body else {}
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            parsed = json.loads(body) if body else {}
+        except Exception:
+            parsed = {"message": body}
+        return e.code, parsed
+
+
+def get_secret_github_token() -> str:
+    try:
+        github_section = st.secrets.get("github", {})
+        if isinstance(github_section, dict):
+            token = str(github_section.get("token", "")).strip()
+            if token:
+                return token
+    except Exception:
+        pass
+    try:
+        token = str(st.secrets.get("GITHUB_TOKEN", "")).strip()
+        if token:
+            return token
+    except Exception:
+        pass
+    return ""
+
+
+def commit_csv_to_github(
+    ann: pd.DataFrame,
+    repo_spec: str,
+    branch: str,
+    file_path: str,
+    token: str,
+    commit_message: str,
+) -> tuple[bool, str]:
+    if "/" not in repo_spec:
+        return False, "Repo must be in owner/name format."
+    owner, repo = repo_spec.split("/", 1)
+    owner = owner.strip()
+    repo = repo.strip()
+    branch = branch.strip() or "main"
+    file_path = file_path.strip().strip("/")
+    token = token.strip()
+    if not owner or not repo or not file_path:
+        return False, "Owner, repo, and file path are required."
+    if not token:
+        return False, "GitHub token is required."
+
+    encoded_path = quote(file_path, safe="/")
+    contents_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{encoded_path}?ref={quote(branch)}"
+
+    status, data = github_request(contents_url, token, method="GET")
+    sha = None
+    if status == 200:
+        sha = str(data.get("sha", "")).strip() or None
+    elif status != 404:
+        msg = data.get("message", f"GitHub API returned HTTP {status}.")
+        return False, f"Could not read remote file: {msg}"
+
+    csv_text = ann.to_csv(index=False)
+    payload = {
+        "message": commit_message.strip() or "Update annotations CSV",
+        "content": base64.b64encode(csv_text.encode("utf-8")).decode("ascii"),
+        "branch": branch,
+    }
+    if sha is not None:
+        payload["sha"] = sha
+
+    put_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{encoded_path}"
+    put_status, put_data = github_request(put_url, token, method="PUT", payload=payload)
+    if put_status in (200, 201):
+        new_sha = put_data.get("content", {}).get("sha", "")
+        return True, f"Committed to {owner}/{repo}@{branch}:{file_path} ({new_sha[:7]})"
+    msg = put_data.get("message", f"GitHub API returned HTTP {put_status}.")
+    return False, f"Commit failed: {msg}"
+
+
 def next_unlabeled_idx(df: pd.DataFrame, start_pos: int) -> int:
     if len(df) == 0:
         return 0
@@ -213,6 +312,45 @@ def main() -> None:
         ann = demo_table()
         source_csv = None
     ann = ensure_schema(ann)
+
+    st.sidebar.markdown("### GitHub Sync")
+    default_repo = "izu0421/xenium_annotator"
+    if source_csv is not None:
+        try:
+            default_rel = str(source_csv.relative_to(REPO)).replace("\\", "/")
+        except Exception:
+            default_rel = "assess/annotations/sample_100_per_channel.csv"
+    else:
+        default_rel = "assess/annotations/sample_100_per_channel.csv"
+
+    gh_repo = st.sidebar.text_input("Repo (owner/name)", value=default_repo)
+    gh_branch = st.sidebar.text_input("Branch", value="main")
+    gh_file_path = st.sidebar.text_input("CSV file path in repo", value=default_rel)
+    gh_message = st.sidebar.text_input(
+        "Commit message",
+        value=f"Update annotations {dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+    )
+
+    secret_token = get_secret_github_token()
+    if secret_token:
+        st.sidebar.caption("Using GitHub token from Streamlit secrets.")
+        gh_token = secret_token
+    else:
+        gh_token = st.sidebar.text_input("GitHub token", type="password")
+
+    if st.sidebar.button("Commit CSV to GitHub", use_container_width=True):
+        ok, msg = commit_csv_to_github(
+            ann=ann,
+            repo_spec=gh_repo,
+            branch=gh_branch,
+            file_path=gh_file_path,
+            token=gh_token,
+            commit_message=gh_message,
+        )
+        if ok:
+            st.sidebar.success(msg)
+        else:
+            st.sidebar.error(msg)
 
     channels = ["(all)"] + sorted(ann["channel"].dropna().astype(str).unique().tolist())
     channel = st.sidebar.selectbox("Channel", channels)
