@@ -23,6 +23,21 @@ LABEL_OPTIONS = ["", "signal", "noise", "unclear", "skip"]
 GLOBAL_SCALE_CACHE = ANNOT_DIR / "protein_global_scale_webapp.json"
 
 
+def demo_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "sample_id": [1, 2, 3],
+            "cell_id": ["demo-1", "demo-2", "demo-3"],
+            "channel": ["demo", "demo", "demo"],
+            "crop_path": ["", "", ""],
+            "label": ["", "", ""],
+            "confidence": [np.nan, np.nan, np.nan],
+            "notes": ["", "", ""],
+            "annotated_at": ["", "", ""],
+        }
+    )
+
+
 @st.cache_data(show_spinner=False)
 def load_table(csv_path: str) -> pd.DataFrame:
     ann = pd.read_csv(csv_path)
@@ -35,6 +50,23 @@ def load_table(csv_path: str) -> pd.DataFrame:
     ann["notes"] = ann["notes"].fillna("").astype(str)
     ann["annotated_at"] = ann["annotated_at"].fillna("").astype(str)
     ann["confidence"] = pd.to_numeric(ann["confidence"], errors="coerce")
+    return ann
+
+
+def ensure_schema(ann: pd.DataFrame) -> pd.DataFrame:
+    ann = ann.copy()
+    required = ["sample_id", "cell_id", "channel", "crop_path", "label", "confidence", "notes", "annotated_at"]
+    for col in required:
+        if col not in ann.columns:
+            ann[col] = "" if col not in {"sample_id", "confidence"} else np.nan
+    ann["label"] = ann["label"].fillna("").astype(str)
+    ann["notes"] = ann["notes"].fillna("").astype(str)
+    ann["annotated_at"] = ann["annotated_at"].fillna("").astype(str)
+    ann["confidence"] = pd.to_numeric(ann["confidence"], errors="coerce")
+    ann["channel"] = ann["channel"].fillna("unknown").astype(str)
+    ann["cell_id"] = ann["cell_id"].fillna("").astype(str)
+    ann["crop_path"] = ann["crop_path"].fillna("").astype(str)
+    ann["sample_id"] = pd.to_numeric(ann["sample_id"], errors="coerce").fillna(0).astype(int)
     return ann
 
 
@@ -88,6 +120,14 @@ def get_global_scale(ann: pd.DataFrame) -> tuple[float, float]:
 
 
 def render_triptych(crop_path: str, global_lo: float, global_hi: float) -> np.ndarray:
+    if not crop_path or not Path(crop_path).exists():
+        h, w = 240, 720
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        img[:, :, :] = 32
+        img[:, : w // 3, :] = [44, 62, 80]
+        img[:, w // 3 : 2 * w // 3, :] = [72, 57, 38]
+        img[:, 2 * w // 3 :, :] = [57, 72, 38]
+        return img
     a = tifffile.imread(crop_path)
     dapi = np.asarray(a[0], dtype=np.float32)
     prot = np.asarray(a[1], dtype=np.float32)
@@ -154,11 +194,18 @@ def main() -> None:
 
     csv_path = st.sidebar.text_input("Annotation CSV", str(SAMPLE_PATH))
     csv_file = Path(csv_path)
-    if not csv_file.exists():
-        st.error(f"CSV not found: {csv_file}")
-        st.stop()
-
-    ann = load_table(str(csv_file))
+    uploaded = st.sidebar.file_uploader("Or upload a CSV", type=["csv"])
+    if csv_file.exists():
+        ann = load_table(str(csv_file))
+        source_csv = csv_file
+    elif uploaded is not None:
+        ann = pd.read_csv(uploaded)
+        source_csv = None
+    else:
+        st.warning("No local annotation CSV was found, so the app is showing a small demo table.")
+        ann = demo_table()
+        source_csv = None
+    ann = ensure_schema(ann)
 
     channels = ["(all)"] + sorted(ann["channel"].dropna().astype(str).unique().tolist())
     channel = st.sidebar.selectbox("Channel", channels)
@@ -263,8 +310,9 @@ def main() -> None:
         ann.loc[orig_idx, "confidence"] = float(conf) if label else np.nan
         ann.loc[orig_idx, "notes"] = notes
         ann.loc[orig_idx, "annotated_at"] = dt.datetime.now().isoformat(timespec="seconds") if label else ""
-        save_table(ann, csv_file)
-        load_table.clear()
+        if source_csv is not None:
+            save_table(ann, source_csv)
+            load_table.clear()
         st.success("Saved")
 
         if save_next_clicked:
