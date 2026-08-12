@@ -245,13 +245,23 @@ def commit_csv_to_github(
 
     status, data = github_request(contents_url, token, method="GET")
     sha = None
+    remote_content = None
     if status == 200:
         sha = str(data.get("sha", "")).strip() or None
+        remote_content = str(data.get("content", "") or "")
     elif status != 404:
         msg = data.get("message", f"GitHub API returned HTTP {status}.")
         return False, f"Could not read remote file: {msg}"
 
     csv_text = ann.to_csv(index=False)
+    if sha is not None and remote_content:
+        try:
+            decoded = base64.b64decode(remote_content).decode("utf-8")
+            if decoded == csv_text:
+                return True, f"No changes to commit for {owner}/{repo}@{branch}:{file_path}"
+        except Exception:
+            pass
+
     payload = {
         "message": commit_message.strip() or "Update annotations CSV",
         "content": base64.b64encode(csv_text.encode("utf-8")).decode("ascii"),
@@ -348,9 +358,26 @@ def main() -> None:
             commit_message=gh_message,
         )
         if ok:
+            st.session_state["pending_saves"] = 0
+            st.session_state["last_commit_msg"] = msg
             st.sidebar.success(msg)
         else:
+            st.session_state["last_commit_msg"] = msg
             st.sidebar.error(msg)
+
+    auto_commit_enabled = st.sidebar.checkbox("Auto-commit to GitHub", value=True)
+    auto_commit_every = int(
+        st.sidebar.number_input("Auto-commit every N saves", min_value=1, max_value=100, value=5, step=1)
+    )
+
+    if "pending_saves" not in st.session_state:
+        st.session_state["pending_saves"] = 0
+    if "last_commit_msg" not in st.session_state:
+        st.session_state["last_commit_msg"] = ""
+
+    st.sidebar.caption(f"Pending unsynced saves: {int(st.session_state['pending_saves'])}")
+    if st.session_state["last_commit_msg"]:
+        st.sidebar.caption(st.session_state["last_commit_msg"])
 
     channels = ["(all)"] + sorted(ann["channel"].dropna().astype(str).unique().tolist())
     channel = st.sidebar.selectbox("Channel", channels)
@@ -462,7 +489,30 @@ def main() -> None:
         if source_csv is not None:
             save_table(ann, source_csv)
             load_table.clear()
-        st.success("Saved")
+        st.session_state["pending_saves"] = int(st.session_state.get("pending_saves", 0)) + 1
+
+        if auto_commit_enabled:
+            if not gh_token:
+                st.warning("Auto-commit is enabled but no GitHub token is available.")
+            elif int(st.session_state["pending_saves"]) >= auto_commit_every:
+                ok, msg = commit_csv_to_github(
+                    ann=ann,
+                    repo_spec=gh_repo,
+                    branch=gh_branch,
+                    file_path=gh_file_path,
+                    token=gh_token,
+                    commit_message=gh_message,
+                )
+                st.session_state["last_commit_msg"] = msg
+                if ok:
+                    st.session_state["pending_saves"] = 0
+                    st.success(f"Saved and auto-committed. {msg}")
+                else:
+                    st.warning(f"Saved locally, but auto-commit failed: {msg}")
+            else:
+                st.success("Saved")
+        else:
+            st.success("Saved")
 
         if save_next_clicked:
             st.session_state.pos = min(len(view) - 1, st.session_state.pos + 1)

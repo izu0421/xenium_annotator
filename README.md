@@ -95,3 +95,7 @@ for fine-grained tokens):
 [github]
 token = "ghp_xxx"
 ```
+
+Then use the app sidebar `GitHub Sync` controls. You can either click
+`Commit CSV to GitHub` manually, or enable `Auto-commit to GitHub` and choose
+`Auto-commit every N saves` to push annotations in batches while you label.
