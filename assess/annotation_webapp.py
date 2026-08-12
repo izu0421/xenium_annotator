@@ -21,6 +21,7 @@ ANNOT_DIR = REPO / "assess" / "annotations"
 SAMPLE_PATH = ANNOT_DIR / "sample_100_per_channel.csv"
 LABEL_OPTIONS = ["", "signal", "noise", "unclear", "skip"]
 GLOBAL_SCALE_CACHE = ANNOT_DIR / "protein_global_scale_webapp.json"
+TRIPTYCH_DIR = ANNOT_DIR / "triptych_cache"
 
 
 def demo_table() -> pd.DataFrame:
@@ -86,6 +87,8 @@ def mask_boundary(mask: np.ndarray) -> np.ndarray | None:
 def compute_global_scale(paths: list[str]) -> tuple[float, float]:
     vals = []
     for p in paths:
+        if not p or not Path(p).exists():
+            continue
         try:
             a = tifffile.imread(p)
             prot = np.asarray(a[1], dtype=np.float32)
@@ -161,6 +164,10 @@ def render_triptych(crop_path: str, global_lo: float, global_hi: float) -> np.nd
     trip = np.concatenate([dapi_rgb, local_rgb, global_rgb], axis=1)
     trip = (np.clip(trip, 0, 1) * 255).astype(np.uint8)
     return trip
+
+
+def bundled_triptych_path(sample_id: int) -> Path:
+    return TRIPTYCH_DIR / f"{int(sample_id):06d}.png"
 
 
 def next_unlabeled_idx(df: pd.DataFrame, start_pos: int) -> int:
@@ -284,9 +291,13 @@ def main() -> None:
     )
 
     try:
-        global_lo, global_hi = get_global_scale(ann)
-        trip = render_triptych(str(row["crop_path"]), global_lo, global_hi)
-        st.image(trip, caption="DAPI | Protein local | Protein global (cyan boundary)")
+        bundled = bundled_triptych_path(int(row["sample_id"]))
+        if bundled.exists():
+            st.image(str(bundled), caption="Bundled triptych (DAPI | Protein local | Protein global)")
+        else:
+            global_lo, global_hi = get_global_scale(ann)
+            trip = render_triptych(str(row["crop_path"]), global_lo, global_hi)
+            st.image(trip, caption="DAPI | Protein local | Protein global (cyan boundary)")
     except Exception as e:
         st.error(f"Failed to render crop: {e}")
 
