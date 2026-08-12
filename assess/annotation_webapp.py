@@ -471,7 +471,31 @@ def main() -> None:
     current_conf = 0.8 if pd.isna(current_conf) else float(current_conf)
     current_notes = str(ann.loc[orig_idx, "notes"])
 
-    label = st.selectbox("Label", LABEL_OPTIONS, index=LABEL_OPTIONS.index(current_label) if current_label in LABEL_OPTIONS else 0)
+    label_state_key = "selected_label_value"
+    label_row_key = "selected_label_row"
+    if st.session_state.get(label_row_key) != orig_idx:
+        st.session_state[label_state_key] = current_label if current_label in LABEL_OPTIONS else ""
+        st.session_state[label_row_key] = orig_idx
+
+    st.write("Label")
+    label_cols = st.columns(5)
+    label_choices = [
+        ("Signal", "signal"),
+        ("Noise", "noise"),
+        ("Unclear", "unclear"),
+        ("Skip", "skip"),
+        ("Clear", ""),
+    ]
+    for i, (title, value) in enumerate(label_choices):
+        is_selected = st.session_state.get(label_state_key, "") == value
+        btn_type = "primary" if is_selected else "secondary"
+        if label_cols[i].button(title, key=f"label_btn_{orig_idx}_{value or 'empty'}", use_container_width=True, type=btn_type):
+            st.session_state[label_state_key] = value
+            st.rerun()
+
+    label = st.session_state.get(label_state_key, "")
+    st.caption(f"Selected label: {label if label else '(none)'}")
+
     conf = st.slider("Confidence", min_value=0.0, max_value=1.0, value=float(current_conf), step=0.05)
     notes = st.text_input("Notes", value=current_notes)
 
